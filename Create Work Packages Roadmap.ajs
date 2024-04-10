@@ -1,0 +1,396 @@
+/*
+ * Create Roadmap for WorkPackages (Selected Element).ajs
+ *===========================================================================================================================
+ * Owen Richardson 2023-01-06
+ * Version 1.01: Updated to have better error checking.
+ * Version 1.02: Modified the date line code so it can do more than a year if needed.
+ * Version 1.03: Bugfix of the grid, and add of showGrid for switching grids on and off
+ * Version 2.00: Major overhaul
+ *					* Completely overhauled the calculation logic
+ *					* Made this script run on a selection rather than the whole model.
+ *					* If a project status is discontinued it does not display it
+ * 
+ * This creates a simple roadmap view in the current model, which iterates through all the work packages and adds them to 2023.
+ * Theres some scope for later improvement
+ * 
+ * For more info see https://easandbox.wordpress.com/2023/01/06/building-a-roadmap-in-jarchi/
+ *
+ * Version 2.01: Roadmap view uses unique work-package elements because of heat map.
+ *               - didn't want to change attributes of original work-package elements.
+ *               Added property "Progress", support for DD-MM-YYY and YYY-MM-DD formats in Start Date and End Date.
+ *               Added heat map, % progress, current date, colors in diagram.   
+ *               Added scope selection: Model, View or Selection.  
+ *               
+ */
+
+//variables for dates
+var todayDate   = new Date().toISOString().slice(0, 10); // get todays date formatted YYYY-MM-DD
+var thisYear    = new Date().getFullYear();              // this year!
+var startOfYear = new Date(thisYear, 0, 1, 1, 0, 0, 0).getTime();        // get January 1st of this year.
+var endOfYear   = new Date(thisYear, 11, 31, 23, 59, 59, 999).getTime(); // end of year in 2 years
+var baseDate    = new Date(startOfYear);                 // variable for date math when generating the date timeline
+
+//variables for graphics
+var leftPadding     = 10;   // number of pixels for left padding
+var topPadding      = 10;   // number of pixels for top padding
+var monthWidth      = 120;  // the size of each month on the roadmap
+var projectHeight   = 30;   // the height of each work package
+var projectSpacer   = 2;    // pixels between each package
+var projectTextSize = 7;    // size of the work package text
+var oneTick         = 0;    // its the value for aligning scales
+var showGrid        = true; // shows the lines going down so you can see which months the project are in.
+var minValue        = 0;
+var maxValue        = 100;
+
+//where we will store our work packages
+var elementList = [];
+
+console.show();
+console.clear();
+
+// Simple function to take a number and turn it into month name. There are other ways to do this in Javascript,
+// but i couldn't find one that worked.
+function getMonthName(monthNumber) {
+	const month = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
+	return month[monthNumber - 1];
+}
+
+// Handle both DD-MM-YYYY and YYYY-MM-DD date formats 
+function getDateStr(str) 
+{
+  const words = str.split('-');
+  if (words.length != 3)
+    return ""; 
+
+  if (Math.round(words[0]) < Math.round(words[2])) {
+     var dstr = words[2] + "-" + words[1] + "-" + words[0]; 
+
+     return dstr;
+  } else 
+     return str;
+}
+
+// Convert a value to a color between red and green
+function getColorValue(num, maxValue) {
+    var red   = 0; //Math.round(255 * (num / maxValue));
+    var green = Math.round(255 * (num / maxValue));
+    var blue  = Math.round(25 * (num / maxValue));
+
+    return convertRGBToHexString(red, green, blue);
+}
+
+// Convert RGB values to a Hex color string. Format is #rrggbb
+function convertRGBToHexString(red, green, blue) {
+    red = red.toString(16);
+    if(red.length == 1) red = "0" + red;
+
+    green = green.toString(16);
+    if(green.length == 1) green = "0" + green;
+
+    blue = blue.toString(16);
+    if(blue.length == 1) blue = "0" + blue;
+
+    return '#' + red + green + blue;
+}
+
+// Sorts an array of objects by the property specified in strKey
+function bubbleSortElement(arr, strKey) 
+{
+	let swapped;
+	do {
+		swapped = false;
+		for (let i = 0; i < arr.length - 1; i++) {
+			if (new Date(arr[i][strKey]) > new Date(arr[i + 1][strKey])) {
+				var temp = arr[i];
+				arr[i] = arr[i + 1];
+				arr[i + 1] = temp;
+				swapped = true;
+			}
+		}
+	} while (swapped);
+	return arr;a
+}
+
+
+function daysInMonth(month, year) 
+{ 
+  return new Date(year, month, 0).getDate(); 
+} 
+
+// calculate grid location for a date
+function gridLoc(strdate)
+{
+	var gdate = new Date(strdate);
+	var sdate = new Date(startOfYear);
+	var edate = new Date(endOfYear);
+	var cx = 0;
+
+	if (gdate > edate)
+		gdate = new Date(edate.setDate(edate.getDate()+3));
+
+	var mc = gdate.getMonth() - sdate.getMonth() + (12 * (gdate.getFullYear() - sdate.getFullYear()));
+
+	if (mc < 0) return 0;
+	// if the month started before the grid on this view then we know the start point is before our grid...
+	// in which case - we start at zero - so you can see easier where projects started before the year begins
+
+	//to get to the right month location, we need to hop across the number of months to get to the first of the month.
+	cx = leftPadding + (mc*monthWidth);
+
+	var days = daysInMonth(gdate.getMonth() + 1, gdate.getFullYear());
+	var scale = monthWidth / days;
+	cx = cx + (scale * (gdate.getDate()-1));
+
+	return cx;
+}
+
+
+var options = ["Cancel", "Model","View", "Selection"];
+
+function buttonDialog(message,options) {
+    var dialog = new org.eclipse.jface.dialogs.MessageDialog(shell,
+           "Archi",null,message, 3, options, 0);
+    
+    var result=dialog.open();
+    return result == options.length ? null : result;
+}
+
+var theAnswer = buttonDialog("Please select scope?", options);
+console.log(theAnswer);
+
+// let people know we are doing this in the console
+console.log("Creating a roadmap from ...");
+
+//Create the view
+var archimateView = model.createArchimateView(todayDate + ": My Roadmap");
+
+var countDate = baseDate;
+var i = 0;
+var finished = false;
+while (!finished)
+{
+	if (countDate.getMonth() == 0) //is january so put the year number here. 
+	{
+	   var yearNote = archimateView.createObject("note", leftPadding + (i * monthWidth), topPadding, 100, 30);
+	   yearNote.borderType = BORDER.NONE;
+	   yearNote.fontStyle = "bold";
+	   yearNote.setText(countDate.getFullYear().toString());
+	   yearNote.fontSize = 14;
+	}
+
+	// create the block for the month
+	var note = archimateView.createObject("note", leftPadding + (i * monthWidth), topPadding + 30, monthWidth, 30);
+	note.borderType = BORDER.RECTANGLE;
+	note.fontStyle = "bold";
+        note.fillColor = "#B6DCFF";
+	note.setText(getMonthName((i % 12) + 1)); //modulus of 12 gives us a value of 0-11
+
+	// add one to the current month date
+	new Date(countDate.setMonth(countDate.getMonth()+1));
+
+	if (countDate.getTime() >= endOfYear) finished = true; //check to see if we are done
+	i++;
+}
+
+
+var j = 0;
+
+switch (theAnswer) { 
+
+case 1: // option: Model 
+
+	try {
+	  var elements = $("element");
+	} catch (e) {
+	  window.alert("Select a model first!");  
+          archimateView.delete();
+	  exit();  
+	} 
+
+	$("work-package").each(function(workpackage) {
+	// some sanitation - we will only add if there is a start and end
+	if (workpackage.prop("Start Date") != null && workpackage.prop("End Date") != null && workpackage.prop("Project Status") != "Discontinued") {
+
+	   // Want to make sure the start date can be converted to time
+	   var ts = getDateStr(workpackage.prop("Start Date"));
+	   var te = getDateStr(workpackage.prop("End Date"));
+
+	   if (!isNaN(new Date(ts).getTime()) && !isNaN(new Date(te).getTime())) // if it is a number!
+	   {
+	     var w = new Object; 
+	     w["Name"] = ".work-package." + j++;
+	     w["Label"] = workpackage.name;
+	     w["Start Date"] = ts;	
+	     w["End Date"] = te;
+	     w["Project Status"] = workpackage.prop("Project Status");
+	     w["Progress"] = workpackage.prop("Progress");
+
+	     elementList.push(w);
+	   } else
+	     console.log("ERROR: The start or end date could not be turned into a date by the system - Threw out " + workpackage)
+	} else
+	  console.log("ERROR: Missing Start/End dates, or it is discontinued - Threw out " + workpackage);
+	});
+
+	break;
+
+case 2: // option: View
+
+	// Get the first view in the current selection
+	var view = selection.filter("archimate-diagram-model").first();
+	if (! view) {  
+	   window.alert("Select a view first!");  
+           archimateView.delete();
+	   exit();  
+	}
+
+	$(view).find("work-package").each(function(workpackage) {
+
+	// some sanitation - we will only add if there is a start and end
+	if (workpackage.prop("Start Date") != null && workpackage.prop("End Date") != null && workpackage.prop("Project Status") != "Discontinued") {
+
+	   // Want to make sure the start date can be converted to time
+	   var ts = getDateStr(workpackage.prop("Start Date"));
+	   var te = getDateStr(workpackage.prop("End Date"));
+
+	   if (!isNaN(new Date(ts).getTime()) && !isNaN(new Date(te).getTime())) // if it is a number!
+	   {
+	     var w = new Object; 
+	     w["Name"] = ".work-package." + j++;
+	     w["Label"] = workpackage.name;
+	     w["Start Date"] = ts;	
+	     w["End Date"] = te;
+	     w["Project Status"] = workpackage.prop("Project Status");
+	     w["Progress"] = workpackage.prop("Progress");
+
+	     elementList.push(w);
+	   } else
+	     console.log("ERROR: The start or end date could not be turned into a date by the system - Threw out " + workpackage)
+	} else
+	  console.log("ERROR: Missing Start/End dates, or it is discontinued - Threw out " + workpackage);
+	});
+	break;
+
+case 3: // option: Selection 
+
+	// Putting all the work package elements from this model into an array, so we can sort them.
+	$(selection).filter("work-package").each(function (workpackage) {
+		// some sanitation - we will only add if there is a start and end
+		if (workpackage.prop("Start Date") != null && workpackage.prop("End Date") != null && workpackage.prop("Project Status") != "Discontinued") {
+
+		   // Want to make sure the start date can be converted to time
+		   var ts = getDateStr(workpackage.prop("Start Date"));
+		   var te = getDateStr(workpackage.prop("End Date"));
+
+		   if (!isNaN(new Date(ts).getTime()) && !isNaN(new Date(te).getTime())) // if it is a number!
+		   {
+	         var w = new Object; 
+	         w["Name"] = ".work-package." + j++;
+	         w["Label"] = workpackage.name;
+	         w["Start Date"] = ts;	
+	         w["End Date"] = te;
+	         w["Project Status"] = workpackage.prop("Project Status");
+	         w["Progress"] = workpackage.prop("Progress");
+
+		     elementList.push(w);
+		   } else
+		     console.log("ERROR: The start or end date could not be turned into a date by the system - Threw out " + workpackage)
+		} else
+		  console.log("ERROR: Missing Start/End dates, or it is discontinued - Threw out " + workpackage);
+	});
+
+    break;
+
+default:
+   archimateView.delete();
+   exit();
+}
+  
+
+// Sorting elementList Array by the property Start Date. 
+// The sort is string-based which works because date format is YYYY-MM-DD.
+var sortedList = bubbleSortElement(elementList, "Start Date");
+
+
+var monthCount = i;
+oneTick = ((endOfYear - startOfYear) / (monthWidth * monthCount)); // time units per pixel between begin and end dates.
+
+var cdp = 5 + (new Date().getTime() - startOfYear) / oneTick; 
+ 
+var cds = archimateView.createObject("note", leftPadding+cdp-2, topPadding+56, 4, 4);
+cds.name = "";
+cds.fillColor = "#000000";
+cds.borderType = BORDER.RECTANGLE;
+
+var cde = archimateView.createObject("note", leftPadding+cdp-2, topPadding+60+10 + (sortedList.length+1) * (projectHeight + projectSpacer), 4, 4);
+cde.name = "";
+cde.fillColor = "#000000";
+cde.borderType = BORDER.RECTANGLE;
+
+// show current date vertical line
+var connection = archimateView.createConnection(cds, cde); // Create and add a connection
+connection.name = ".connection.current_date"; 
+connection.style = CONNECTION_STYLE.LINE_DOTTED;
+connection.textPosition = CONNECTION_TEXT_POSITION.SOURCE;
+connection.labelExpression = todayDate;
+connection.fontSize = 8;
+
+
+// Displays the grid separating the months
+if (showGrid) {
+	for (var j = 0; j < monthCount; j++) {
+		var boundry = archimateView.createObject("note",
+			leftPadding + (j * monthWidth), //x
+			topPadding + 60,				//y
+			monthWidth,						//width
+			10 + ((sortedList.length+1) * (projectHeight + projectSpacer)) //Height  
+		);
+		boundry.borderType = BORDER.RECTANGLE;
+		boundry.outlineOpacity = 80;
+	    boundry.fillColor = "#FFF8FF";
+	}
+}
+
+var count = 0; //count how many elements we have going down.
+		
+for (var i=0; i < sortedList.length; i++) {
+	var wp = sortedList[i]; // Shortcutting having to type sortedList[i] in the inner code.
+	var elementStart = new Date(wp["Start Date"]).getTime();
+	var elementEnd = new Date(wp["End Date"]).getTime();
+
+	if (elementEnd >= startOfYear && elementStart <= endOfYear) {
+		if (elementStart < startOfYear) elementStart = startOfYear;
+		if (elementEnd > endOfYear) elementEnd = endOfYear;
+
+		var calcY = parseInt(topPadding + 66 + (count * (projectHeight + projectSpacer)));
+
+		var calcX=gridLoc(wp["Start Date"]);
+		var calcW = gridLoc(wp["End Date"])-calcX;
+
+        var w = model.createElement("work-package",".work-package." + i);
+        //w.name = wp["Name"];
+        w.prop("Start Date", wp["Start Date"]);
+		w.prop("End Date", wp["End Date"]);
+        w.prop("Progress", wp["Progress"]);
+		w.prop("Project Status", wp["Project Status"]);
+
+		var o = archimateView.add(w, calcX, calcY, calcW, projectHeight);
+		o.labelExpression = wp["Label"];
+
+        var value = w.prop("Progress");
+
+        // If within scope, change color of element's view instances
+        if(value && value >= minValue && value <= maxValue) {
+           o.fontSize = 8;
+           // Set the element's color according to the property value
+           o.fillColor = getColorValue(value, maxValue);
+           o.Opacity = 80;
+           o.labelExpression = o.labelExpression + "\n(" + value + " %)"; 
+        }
+
+        o.textPosition = TEXT_POSITION.CENTER;
+		o.fontSize = projectTextSize;
+		o.textPosition = TEXT_POSITION.CENTER;
+		count++;
+	}
+}
