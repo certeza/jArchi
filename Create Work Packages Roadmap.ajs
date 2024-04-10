@@ -20,7 +20,7 @@
  *               Added property "Progress", support for DD-MM-YYY and YYY-MM-DD formats in Start Date and End Date.
  *               Added heat map, % progress, current date, colors in diagram.   
  *               Added scope selection: Model, View or Selection.  
- *               
+ *               -- 2.01 Additions by Harm Verbeek ---       
  */
 
 //variables for dates
